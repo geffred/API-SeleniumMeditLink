@@ -47,7 +47,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         initializeDriver();
 
         if (isLoggedIn && verifyLoggedIn()) {
-            System.out.println("✅ [MEDITLINK] Déjà connecté, vérification réussie");
+            System.out.println("[MEDITLINK] Déjà connecté, vérification réussie");
             return "Déjà connecté.";
         }
 
@@ -56,48 +56,48 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(WAIT_MEDIUM));
 
             driver.get(BASE_URL + "/login");
-            System.out.println("📄 [MEDITLINK] Page de login chargée");
+            System.out.println("[MEDITLINK] Page de login chargée");
 
             // Saisie des identifiants
             WebElement emailField = wait
                     .until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(LOGIN_INPUT_CSS)));
             emailField.clear();
             emailField.sendKeys(email);
-            System.out.println("📧 [MEDITLINK] Email saisi");
+            System.out.println("[MEDITLINK] Email saisi");
 
             WebElement passwordField = wait
                     .until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(PASSWORD_INPUT_CSS)));
             passwordField.clear();
             passwordField.sendKeys(password);
-            System.out.println("🔒 [MEDITLINK] Mot de passe saisi");
+            System.out.println("[MEDITLINK] Mot de passe saisi");
 
             // Connexion
             WebElement loginButton = wait
                     .until(ExpectedConditions.elementToBeClickable(By.cssSelector(LOGIN_BUTTON_CSS)));
             ((JavascriptExecutor) driver).executeScript("arguments[0].click();", loginButton);
-            System.out.println("🖱️ [MEDITLINK] Clic sur bouton login");
+            System.out.println("[MEDITLINK] Clic sur bouton login");
 
             // Attente redirection
             wait.until(ExpectedConditions.urlContains("inbox"));
-            System.out.println("✅ [MEDITLINK] Redirection vers inbox réussie");
+            System.out.println("[MEDITLINK] Redirection vers inbox réussie");
 
             // Fermeture popup
             try {
                 WebElement closePopupButton = new WebDriverWait(driver, Duration.ofSeconds(WAIT_SHORT))
                         .until(ExpectedConditions.elementToBeClickable(By.cssSelector(POPUP_CLOSE_CSS)));
                 ((JavascriptExecutor) driver).executeScript("arguments[0].click();", closePopupButton);
-                System.out.println("📌 [MEDITLINK] Popup fermé");
+                System.out.println("[MEDITLINK] Popup fermé");
             } catch (TimeoutException e) {
-                System.out.println("ℹ️ [MEDITLINK] Aucun popup détecté");
+                System.out.println("[MEDITLINK] Aucun popup détecté");
             }
 
             isLoggedIn = true;
-            System.out.println("🎉 [MEDITLINK] Connexion réussie");
+            System.out.println("[MEDITLINK] Connexion réussie");
             return "Connexion réussie.";
 
         } catch (Exception e) {
             handleError(e);
-            return "❌ Échec de la connexion : " + e.getMessage();
+            return "Échec de la connexion : " + e.getMessage();
         }
     }
 
@@ -106,17 +106,17 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         try {
             WebDriver driver = getDriver();
             if (driver == null) {
-                System.out.println("❌ [MEDITLINK] Driver null pour vérification connexion");
+                System.out.println("[MEDITLINK] Driver null pour vérification connexion");
                 return false;
             }
 
             driver.get(BASE_URL + "/dashboard");
             new WebDriverWait(driver, Duration.ofSeconds(WAIT_SHORT))
                     .until(ExpectedConditions.urlContains("dashboard"));
-            System.out.println("✅ [MEDITLINK] Vérification connexion réussie");
+            System.out.println("[MEDITLINK] Vérification connexion réussie");
             return true;
         } catch (Exception e) {
-            System.out.println("❌ [MEDITLINK] Échec vérification connexion: " + e.getMessage());
+            System.out.println("[MEDITLINK] Échec vérification connexion: " + e.getMessage());
             return false;
         }
     }
@@ -126,7 +126,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         System.out.println("\n=== [MEDITLINK FETCH] Début récupération des 6 dernières commandes ===");
 
         if (!ensureConnection()) {
-            System.err.println("❌ [MEDITLINK] Impossible de se connecter, retour cache");
+            System.err.println("[MEDITLINK] Impossible de se connecter, retour cache");
             return getSixDernieresCommandes();
         }
 
@@ -134,23 +134,23 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             WebDriver driver = getDriver();
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(WAIT_MEDIUM));
 
-            System.out.println("🔍 [MEDITLINK] Chargement page inbox...");
+            System.out.println("[MEDITLINK] Chargement page inbox...");
             driver.get(BASE_URL + "/inbox");
 
             // Attente chargement tableau
             wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(INBOX_TABLE_ROW_CSS)));
             List<WebElement> rows = driver.findElements(By.cssSelector(INBOX_TABLE_ROW_CSS));
-            System.out.println("📊 [MEDITLINK] " + rows.size() + " lignes trouvées dans l'inbox");
+            System.out.println("[MEDITLINK] " + rows.size() + " lignes trouvées dans l'inbox");
 
             // Vérification rapide des nouvelles commandes
             boolean nouvellesCommandes = detecterNouvellesCommandes(rows);
 
             if (!nouvellesCommandes && !commandesStorage.isEmpty()) {
-                System.out.println("✅ [MEDITLINK] Aucune nouvelle commande, retour des 6 dernières du cache");
+                System.out.println("[MEDITLINK] Aucune nouvelle commande, retour des 6 dernières du cache");
                 return getSixDernieresCommandes();
             }
 
-            System.out.println("🆕 [MEDITLINK] Nouvelles commandes détectées, extraction complète...");
+            System.out.println("[MEDITLINK] Nouvelles commandes détectées, extraction complète...");
             List<Commande> toutesCommandes = extraireToutesCommandesAvecCommentaires(rows);
 
             // Mise à jour du cache avec tri par date
@@ -159,13 +159,13 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             trierCacheParDate();
 
             lastFetchTime = LocalDate.now();
-            System.out.println("💾 [MEDITLINK] Cache mis à jour avec " + commandesStorage.size() + " commandes");
+            System.out.println("[MEDITLINK] Cache mis à jour avec " + commandesStorage.size() + " commandes");
 
             return getSixDernieresCommandes();
 
         } catch (Exception e) {
             handleError(e);
-            System.err.println("❌ [MEDITLINK] Erreur lors du fetch, retour cache existant");
+            System.err.println("[MEDITLINK] Erreur lors du fetch, retour cache existant");
             return getSixDernieresCommandes();
         }
     }
@@ -174,10 +174,10 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
      * Détecte s'il y a de nouvelles commandes par rapport au cache
      */
     private boolean detecterNouvellesCommandes(List<WebElement> rows) {
-        System.out.println("🔍 [MEDITLINK] Détection des nouvelles commandes...");
+        System.out.println("[MEDITLINK] Détection des nouvelles commandes...");
 
         if (commandesStorage.isEmpty()) {
-            System.out.println("🆕 [MEDITLINK] Cache vide, toutes les commandes sont nouvelles");
+            System.out.println("[MEDITLINK] Cache vide, toutes les commandes sont nouvelles");
             return true;
         }
 
@@ -189,7 +189,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             try {
                 String externalId = extractText(row, "td:nth-child(7) span");
                 if (!externalId.isEmpty() && !idsCache.contains(externalId)) {
-                    System.out.println("🆕 [MEDITLINK] Nouvelle commande détectée: " + externalId);
+                    System.out.println("[MEDITLINK] Nouvelle commande détectée: " + externalId);
                     return true;
                 }
             } catch (Exception e) {
@@ -197,7 +197,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             }
         }
 
-        System.out.println("✅ [MEDITLINK] Aucune nouvelle commande détectée");
+        System.out.println("[MEDITLINK] Aucune nouvelle commande détectée");
         return false;
     }
 
@@ -205,13 +205,13 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
      * Extrait toutes les commandes avec leurs commentaires
      */
     private List<Commande> extraireToutesCommandesAvecCommentaires(List<WebElement> rows) {
-        System.out.println("🔍 [MEDITLINK] Extraction de toutes les commandes avec commentaires...");
+        System.out.println("[MEDITLINK] Extraction de toutes les commandes avec commentaires...");
         List<Commande> commandes = new ArrayList<>();
 
         for (int i = 0; i < Math.min(rows.size(), MAX_COMMANDES * 2); i++) {
             WebElement row = rows.get(i);
             System.out.println(
-                    "📝 [MEDITLINK] Traitement ligne " + (i + 1) + "/" + Math.min(rows.size(), MAX_COMMANDES * 2));
+                    "[MEDITLINK] Traitement ligne " + (i + 1) + "/" + Math.min(rows.size(), MAX_COMMANDES * 2));
 
             Commande cmd = extractCommandeFromRow(row);
             if (cmd != null) {
@@ -220,7 +220,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         }
 
         System.out.println(
-                "✅ [MEDITLINK] " + commandes.size() + " commandes extraites, récupération des commentaires...");
+                "[MEDITLINK] " + commandes.size() + " commandes extraites, récupération des commentaires...");
 
         // Récupération des commentaires en parallèle
         ExecutorService executor = Executors.newFixedThreadPool(3);
@@ -230,7 +230,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             futures.add(executor.submit(() -> {
                 String commentaire = extractComments(commande.getExternalId());
                 commande.setCommentaire(commentaire);
-                System.out.println("💬 [MEDITLINK] Commentaire récupéré pour " + commande.getExternalId());
+                System.out.println("[MEDITLINK] Commentaire récupéré pour " + commande.getExternalId());
             }));
         }
 
@@ -239,12 +239,12 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             try {
                 future.get();
             } catch (Exception e) {
-                System.err.println("❌ [MEDITLINK] Erreur lors de la récupération des commentaires: " + e.getMessage());
+                System.err.println("[MEDITLINK] Erreur lors de la récupération des commentaires: " + e.getMessage());
             }
         }
 
         executor.shutdown();
-        System.out.println("🎉 [MEDITLINK] Tous les commentaires récupérés");
+        System.out.println("[MEDITLINK] Tous les commentaires récupérés");
 
         return commandes;
     }
@@ -254,7 +254,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
      */
     private List<Commande> getSixDernieresCommandes() {
         if (commandesStorage.isEmpty()) {
-            System.out.println("⚠️ [MEDITLINK] Cache vide, aucune commande à retourner");
+            System.out.println("[MEDITLINK] Cache vide, aucune commande à retourner");
             return new ArrayList<>();
         }
 
@@ -262,7 +262,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
                 .limit(MAX_COMMANDES)
                 .collect(Collectors.toList());
 
-        System.out.println("📦 [MEDITLINK] Retour des " + sixDernieres.size() + " dernières commandes");
+        System.out.println("[MEDITLINK] Retour des " + sixDernieres.size() + " dernières commandes");
         return new ArrayList<>(sixDernieres);
     }
 
@@ -273,7 +273,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         commandesStorage.sort(Comparator.comparing(
                 Commande::getDateReception,
                 Comparator.nullsLast(Comparator.reverseOrder())));
-        System.out.println("📅 [MEDITLINK] Cache trié par date (plus récent en premier)");
+        System.out.println("[MEDITLINK] Cache trié par date (plus récent en premier)");
     }
 
     private Commande extractCommandeFromRow(WebElement row) {
@@ -282,7 +282,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             String externalId = extractText(row, "td:nth-child(7) span");
 
             if (patientName.isEmpty() || externalId.isEmpty()) {
-                System.out.println("⚠️ [MEDITLINK] Données manquantes dans la ligne, commande ignorée");
+                System.out.println("[MEDITLINK] Données manquantes dans la ligne, commande ignorée");
                 return null;
             }
 
@@ -300,10 +300,10 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             try {
                 LocalDate creationDate = LocalDate.parse(creationDateStr, DATE_FORMATTER);
                 commande.setDateReception(creationDate);
-                System.out.println("📅 [MEDITLINK] Date réception: " + creationDate + " pour " + externalId);
+                System.out.println("[MEDITLINK] Date réception: " + creationDate + " pour " + externalId);
             } catch (Exception e) {
                 commande.setDateReception(LocalDate.now());
-                System.out.println("⚠️ [MEDITLINK] Date réception par défaut pour " + externalId);
+                System.out.println("[MEDITLINK] Date réception par défaut pour " + externalId);
             }
 
             try {
@@ -313,11 +313,11 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
                 // Date d'échéance non définie si parsing échoue
             }
 
-            System.out.println("✅ [MEDITLINK] Commande extraite: " + externalId + " - " + patientName);
+            System.out.println("[MEDITLINK] Commande extraite: " + externalId + " - " + patientName);
             return commande;
 
         } catch (Exception e) {
-            System.err.println("❌ [MEDITLINK] Erreur extraction commande: " + e.getMessage());
+            System.err.println("[MEDITLINK] Erreur extraction commande: " + e.getMessage());
             return null;
         }
     }
@@ -331,7 +331,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
     }
 
     private String extractComments(String externalId) {
-        System.out.println("💬 [MEDITLINK] Début extraction commentaires pour " + externalId);
+        System.out.println("[MEDITLINK] Début extraction commentaires pour " + externalId);
 
         try {
             WebDriver driver = getDriver();
@@ -350,22 +350,22 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
 
             String result = commentaire != null && !commentaire.trim().isEmpty() ? commentaire.trim()
                     : "Aucun commentaire";
-            System.out.println("✅ [MEDITLINK] Commentaires récupérés pour " + externalId + ": " +
+            System.out.println("[MEDITLINK] Commentaires récupérés pour " + externalId + ": " +
                     (result.length() > 50 ? result.substring(0, 50) + "..." : result));
 
             return result;
 
         } catch (Exception e) {
-            System.err.println("❌ [MEDITLINK] Impossible de récupérer les commentaires pour " + externalId);
+            System.err.println("[MEDITLINK] Impossible de récupérer les commentaires pour " + externalId);
             return "Aucun commentaire";
         }
     }
 
     public boolean download3dScan(String externalId) {
-        System.out.println("📥 [MEDITLINK] Début téléchargement scan 3D pour " + externalId);
+        System.out.println("[MEDITLINK] Début téléchargement scan 3D pour " + externalId);
 
         if (!ensureConnection()) {
-            System.err.println("❌ [MEDITLINK] Impossible de se connecter pour téléchargement");
+            System.err.println("[MEDITLINK] Impossible de se connecter pour téléchargement");
             return false;
         }
 
@@ -382,11 +382,11 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
 
             Thread.sleep(Duration.ofSeconds(WAIT_SHORT).toMillis());
 
-            System.out.println("✅ [MEDITLINK] Téléchargement initié pour " + externalId);
+            System.out.println("[MEDITLINK] Téléchargement initié pour " + externalId);
             return true;
 
         } catch (Exception e) {
-            System.err.println("❌ [MEDITLINK] Erreur téléchargement pour " + externalId + ": " + e.getMessage());
+            System.err.println("[MEDITLINK] Erreur téléchargement pour " + externalId + ": " + e.getMessage());
             handleError(e);
             return false;
         }
@@ -394,12 +394,12 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
 
     @Override
     public String logout() {
-        System.out.println("🚪 [MEDITLINK] Début déconnexion...");
+        System.out.println("[MEDITLINK] Début déconnexion...");
         closeDriver();
         isLoggedIn = false;
         commandesStorage.clear();
         lastFetchTime = null;
-        System.out.println("✅ [MEDITLINK] Déconnexion réussie, cache vidé");
+        System.out.println("[MEDITLINK] Déconnexion réussie, cache vidé");
         return "Déconnexion réussie.";
     }
 
@@ -417,7 +417,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
     public void clearCommandesStorage() {
         commandesStorage.clear();
         lastFetchTime = null;
-        System.out.println("🗑️ [MEDITLINK] Cache vidé manuellement");
+        System.out.println("[MEDITLINK] Cache vidé manuellement");
     }
 
     public int getCacheSize() {
