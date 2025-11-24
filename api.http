@@ -1,0 +1,19 @@
+### Connexion à MeditLink
+POST http://localhost:8080/api/meditlink/login
+Content-Type: application/json
+
+### Récupérer le statut de connexion
+GET http://localhost:8080/api/meditlink/status
+
+### Récupérer les commandes
+GET http://localhost:8080/api/meditlink/commandes
+
+### Récupérer une commande spécifique
+GET http://localhost:8080/api/meditlink/commandes/22476714
+
+### Télécharger un scan 3D
+POST http://localhost:8080/api/meditlink/download/123456
+Content-Type: application/json
+
+### Déconnexion
+POST http://localhost:8080/api/meditlink/logout
