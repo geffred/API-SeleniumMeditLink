@@ -289,6 +289,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             Commande commande = new Commande();
             commande.setExternalId(externalId);
             commande.setRefPatient(patientName);
+            commande.setNumeroSuivi(externalId);
             commande.setPlateforme(Plateforme.MEDITLINK);
             commande.setCabinet(extractText(row, "td:nth-child(6) span"));
             commande.setVu(false);
