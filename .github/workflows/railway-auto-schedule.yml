@@ -1,0 +1,246 @@
+name: Railway Auto Deploy/Stop Schedule
+
+on:
+  schedule:
+    # Démarrer à 8h00 UTC (9h00 CET / 10h00 CEST)
+    - cron: '0 8 * * 1-5'
+    # Arrêter à 17h00 UTC (18h00 CET / 19h00 CEST)
+    - cron: '0 17 * * 1-5'
+    # Arrêt spécial vendredi soir pour le weekend
+    - cron: '0 16 * * 5'
+    # Redémarrage lundi matin
+    - cron: '0 7 * * 1'
+  
+  # Déclenchement manuel avec choix d'action
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action à effectuer sur TOUS les services'
+        required: true
+        type: choice
+        options:
+          - deploy
+          - down
+          - status
+      services:
+        description: 'Services spécifiques (séparés par virgule) ou "all" pour tous'
+        required: false
+        default: 'all'
+
+env:
+  # Liste UNIQUEMENT de vos 5 services annexes (UUIDs)
+  # Le service principal (DB) n'est pas touché par ce script.
+  SERVICES: |
+    fc9cde22-a4df-4aab-8ef3-c58b4e667a62
+
+jobs:
+  determine-action:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.set-action.outputs.action }}
+      reason: ${{ steps.set-action.outputs.reason }}
+    
+    steps:
+      - name: Determine action based on schedule
+        id: set-action
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "action=${{ inputs.action }}" >> $GITHUB_OUTPUT
+            echo "reason=Manual trigger" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            DAY=$(date -u +%u)  # 1=Monday, 5=Friday
+            
+            # Logique de décision
+            if [ "$HOUR" = "07" ] && [ "$DAY" = "1" ]; then
+              # Lundi 8h CET
+              echo "action=deploy" >> $GITHUB_OUTPUT
+              echo "reason=Monday morning startup" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "08" ]; then
+              # 9h CET (jours normaux)
+              echo "action=deploy" >> $GITHUB_OUTPUT
+              echo "reason=Daily morning startup" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "16" ] && [ "$DAY" = "5" ]; then
+              # Vendredi 17h CET (arrêt weekend)
+              echo "action=down" >> $GITHUB_OUTPUT
+              echo "reason=Friday evening shutdown (weekend)" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "17" ]; then
+              # 18h CET (arrêt journalier)
+              echo "action=down" >> $GITHUB_OUTPUT
+              echo "reason=Daily evening shutdown" >> $GITHUB_OUTPUT
+            else
+              echo "action=status" >> $GITHUB_OUTPUT
+              echo "reason=Status check" >> $GITHUB_OUTPUT
+            fi
+          fi
+          
+          echo "Heure UTC: $(date -u)"
+          echo "Action déterminée: $(cat $GITHUB_OUTPUT | grep action)"
+
+  manage-services:
+    needs: determine-action
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install Railway CLI
+        run: |
+          npm install -g @railway/cli
+          railway --version
+      
+      - name: Parse services list
+        id: services
+        run: |
+          # Convertir la liste SERVICES en tableau
+          SERVICES_ARRAY=$(echo "${{ env.SERVICES }}" | tr '\n' ' ' | xargs)
+          echo "services=$SERVICES_ARRAY" >> $GITHUB_OUTPUT
+          echo "Services à gérer: $SERVICES_ARRAY"
+      
+      - name: Deploy all services
+        if: needs.determine-action.outputs.action == 'deploy'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+        run: |
+          echo "================================"
+          echo "🚀 DÉPLOIEMENT DES SERVICES ANNEXES"
+          echo "Raison: ${{ needs.determine-action.outputs.reason }}"
+          echo "Heure: $(date)"
+          echo "================================"
+          
+          SUCCESS_COUNT=0
+          FAIL_COUNT=0
+          
+          for service in ${{ steps.services.outputs.services }}; do
+            echo ""
+            echo "📦 Déploiement de: $service"
+            echo "---"
+            
+            # Utilisation de --detach pour lancer l'ordre sans attendre le build
+            if railway up --service "$service" --detach 2>&1; then
+              echo "✅ $service : Ordre de déploiement envoyé"
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            else
+              echo "❌ Échec de la commande pour $service"
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+            
+            # Petite pause technique
+            sleep 2
+          done
+          
+          echo ""
+          echo "================================"
+          echo "📊 RÉSUMÉ"
+          echo "Réussis: $SUCCESS_COUNT"
+          echo "Échoués: $FAIL_COUNT"
+          echo "================================"
+          
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## 🚀 Déploiement Railway
+          **Raison**: ${{ needs.determine-action.outputs.reason }}
+          
+          ### Services relancés
+          $(echo "${{ steps.services.outputs.services }}" | tr ' ' '\n' | sed 's/^/- /')
+          EOF
+      
+      - name: Stop all services
+        if: needs.determine-action.outputs.action == 'down'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+        run: |
+          echo "================================"
+          echo "🛑 ARRÊT DES SERVICES ANNEXES"
+          echo "Raison: ${{ needs.determine-action.outputs.reason }}"
+          echo "Heure: $(date)"
+          echo "================================"
+          
+          SUCCESS_COUNT=0
+          FAIL_COUNT=0
+          
+          for service in ${{ steps.services.outputs.services }}; do
+            echo ""
+            echo "🔴 Arrêt de: $service"
+            echo "---"
+            
+            if railway down --service "$service" --yes 2>&1; then
+              echo "✅ $service arrêté"
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            else
+              echo "❌ Échec de l'arrêt pour $service"
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+            
+            sleep 2
+          done
+          
+          echo ""
+          echo "================================"
+          echo "📊 RÉSUMÉ"
+          echo "Réussis: $SUCCESS_COUNT"
+          echo "Échoués: $FAIL_COUNT"
+          echo "================================"
+          
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## 🛑 Arrêt Railway
+          **Raison**: ${{ needs.determine-action.outputs.reason }}
+          
+          ### Services arrêtés
+          $(echo "${{ steps.services.outputs.services }}" | tr ' ' '\n' | sed 's/^/- /')
+          EOF
+      
+      - name: Check services status
+        if: needs.determine-action.outputs.action == 'status'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+        run: |
+          echo "================================"
+          echo "📊 STATUT"
+          echo "================================"
+          
+          railway status
+          
+          for service in ${{ steps.services.outputs.services }}; do
+            echo ""
+            echo "Service: $service"
+            railway logs --service "$service" --tail 5 || echo "Impossible de récupérer les logs"
+          done
+      
+      - name: Send notification on failure
+        if: failure()
+        run: |
+          echo "⚠️ ALERTE: L'opération a échoué"
+          echo "Action: ${{ needs.determine-action.outputs.action }}"
+          echo "Consultez les logs pour plus de détails"
+
+  save-logs:
+    needs: [determine-action, manage-services]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Create log entry
+        run: |
+          mkdir -p logs
+          cat > logs/railway-$(date +%Y%m%d-%H%M%S).log <<EOF
+          Action: ${{ needs.determine-action.outputs.action }}
+          Reason: ${{ needs.determine-action.outputs.reason }}
+          Timestamp: $(date -Iseconds)
+          Status: ${{ needs.manage-services.result }}
+          EOF
+      
+      - name: Upload logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 30
