@@ -3,6 +3,7 @@ package com.selenium.meditlink.Services;
 import org.openqa.selenium.*;
 import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.support.ui.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.selenium.meditlink.Entity.Commande;
@@ -13,6 +14,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,7 +25,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
 
     private static final int WAIT_SHORT = 5;
     private static final int WAIT_MEDIUM = 10;
-    private static final int MAX_COMMANDES = 6; // Toujours 6 dernières commandes
+    private static final int MAX_COMMANDES = 20; // Toujours 20 dernières commandes
 
     // Selecteurs CSS
     private static final String LOGIN_INPUT_CSS = "input#input-login-id.text-box-input";
@@ -31,11 +33,36 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
     private static final String LOGIN_BUTTON_CSS = "button#btn-login";
     private static final String POPUP_CLOSE_CSS = "div.icon-wrapper.md-icon.xxs[rounded='false']";
     private static final String INBOX_TABLE_ROW_CSS = "tr.main-body-tr";
-    private static final String COMMENT_TEXTAREA_CSS = "textarea[data-v-8a2006a2][data-v-2adbe6cd-s].show-scrollbar[disabled]";
+    // Sélecteur robuste : on cible la première textarea disabled à l'intérieur
+    // d'un conteneur "input-textarea disabled". Évite les hashs Vue (data-v-...)
+    // qui changent à chaque rebuild de MediLink.
+    private static final String COMMENT_TEXTAREA_CSS = "div.input-textarea.disabled textarea";
     private static final String DOWNLOAD_BUTTON_CSS = "div.bg-button";
 
     private final List<Commande> commandesStorage = Collections.synchronizedList(new ArrayList<>());
     private LocalDate lastFetchTime = null;
+
+    // ── Durcissement : TTL cache + verrou anti-chevauchement ──────────────
+    // Au-delà de CACHE_TTL_MS, le prochain fetch force un refresh complet
+    // (re-scrape des commentaires) — capte les commentaires ajoutés après coup
+    // à des commandes déjà connues.
+    private static final long CACHE_TTL_MS = 6L * 60L * 60L * 1000L; // 6 heures
+    // Délai max d'attente du verrou pour les opérations déclenchées par
+    // l'utilisateur (téléchargement) : si un fetch est en cours, on patiente.
+    private static final long LOCK_WAIT_TIMEOUT_MS = 8L * 60L * 1000L; // 8 minutes
+
+    // Horodatage (ms) du dernier refresh COMPLET du cache. 0 = jamais.
+    private long cacheTimestamp = 0L;
+    // Verrou anti-chevauchement : empêche deux opérations Selenium concurrentes
+    // (ex. un fetch en cours + un téléchargement) de partager le même navigateur
+    // (sinon "invalid session" / double Chrome → crash).
+    private final ReentrantLock fetchLock = new ReentrantLock();
+
+    // Tracker dédié aux extractions de commentaires : sert au /health et aux
+    // alertes Brevo pour détecter une régression silencieuse (changement de
+    // hash Vue, sélecteur cassé → tous les commentaires reviennent vides).
+    @Autowired
+    private CommentExtractionStatsService commentStats;
 
     // Credentials
     private final String email = "digilab@thesmilespace.be";
@@ -121,9 +148,33 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         }
     }
 
+    /**
+     * Récupère les commandes MeditLink — point d'entrée public.
+     *
+     * <p>
+     * Le verrou anti-chevauchement empêche deux opérations Selenium
+     * simultanées (fetch + téléchargement par ex.) de se marcher dessus sur
+     * le même navigateur. Si occupé, on renvoie le cache existant plutôt que
+     * de planter avec "invalid session" / double Chrome.
+     * </p>
+     */
     @Override
     public List<Commande> fetchCommandes() {
-        System.out.println("\n=== [MEDITLINK FETCH] Début récupération des 6 dernières commandes ===");
+        if (!fetchLock.tryLock()) {
+            System.out.println("[MEDITLINK] Opération déjà en cours → retour du cache ("
+                    + commandesStorage.size() + " commandes).");
+            return getSixDernieresCommandes();
+        }
+        try {
+            return doFetchCommandes();
+        } finally {
+            fetchLock.unlock();
+        }
+    }
+
+    private List<Commande> doFetchCommandes() {
+        System.out.println("\n=== [MEDITLINK FETCH] Début récupération des "
+                + MAX_COMMANDES + " dernières commandes ===");
 
         if (!ensureConnection()) {
             System.err.println("[MEDITLINK] Impossible de se connecter, retour cache");
@@ -145,19 +196,34 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             // Vérification rapide des nouvelles commandes
             boolean nouvellesCommandes = detecterNouvellesCommandes(rows);
 
-            if (!nouvellesCommandes && !commandesStorage.isEmpty()) {
-                System.out.println("[MEDITLINK] Aucune nouvelle commande, retour des 6 dernières du cache");
+            // Cache expiré ? Si oui, on force un refresh complet pour capter
+            // les commentaires ajoutés après coup à des commandes déjà connues.
+            boolean cacheExpire = (System.currentTimeMillis() - cacheTimestamp) > CACHE_TTL_MS;
+
+            if (!nouvellesCommandes && !commandesStorage.isEmpty() && !cacheExpire) {
+                System.out.println("[MEDITLINK] Aucune nouvelle commande, cache encore frais (TTL "
+                        + (CACHE_TTL_MS / 3_600_000L) + " h) → retour du cache");
                 return getSixDernieresCommandes();
             }
 
-            System.out.println("[MEDITLINK] Nouvelles commandes détectées, extraction complète...");
+            if (cacheExpire) {
+                System.out.println("[MEDITLINK] Cache expiré (> "
+                        + (CACHE_TTL_MS / 3_600_000L)
+                        + " h) → refresh COMPLET (capture des commentaires ajoutés après coup)");
+            } else {
+                System.out.println("[MEDITLINK] Nouvelles commandes détectées, extraction complète...");
+            }
+
             List<Commande> toutesCommandes = extraireToutesCommandesAvecCommentaires(rows);
 
-            // Mise à jour du cache avec tri par date
-            commandesStorage.clear();
-            commandesStorage.addAll(toutesCommandes);
+            // Mise à jour atomique du cache.
+            synchronized (commandesStorage) {
+                commandesStorage.clear();
+                commandesStorage.addAll(toutesCommandes);
+            }
             trierCacheParDate();
 
+            cacheTimestamp = System.currentTimeMillis();
             lastFetchTime = LocalDate.now();
             System.out.println("[MEDITLINK] Cache mis à jour avec " + commandesStorage.size() + " commandes");
 
@@ -228,8 +294,45 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
 
         for (Commande commande : commandes) {
             futures.add(executor.submit(() -> {
+                // Protection régression : ancien commentaire connu pour cette
+                // commande, depuis le tracker en mémoire OU à défaut depuis le
+                // cache local du scraper.
+                String ancienCommentaire = commentStats
+                        .getLastKnownComment(commande.getExternalId());
+                if (ancienCommentaire == null) {
+                    synchronized (commandesStorage) {
+                        ancienCommentaire = commandesStorage.stream()
+                                .filter(c -> commande.getExternalId().equals(c.getExternalId()))
+                                .map(Commande::getCommentaire)
+                                .filter(c -> c != null && !c.trim().isEmpty()
+                                        && !"Aucun commentaire".equals(c.trim()))
+                                .findFirst()
+                                .orElse(null);
+                    }
+                }
                 String commentaire = extractComments(commande.getExternalId());
-                commande.setCommentaire(commentaire);
+                if (commentaire != null && !commentaire.trim().isEmpty()
+                        && !"Aucun commentaire".equals(commentaire.trim())) {
+                    commande.setCommentaire(commentaire);
+                    commentStats.recordSuccess(commande.getExternalId(), commentaire);
+                } else if (ancienCommentaire != null) {
+                    // RÉGRESSION : on garde l'ancien et on alerte
+                    commande.setCommentaire(ancienCommentaire);
+                    commentStats.recordRegression(commande.getExternalId(),
+                            ancienCommentaire,
+                            "Re-extraction vide alors qu'un commentaire était connu");
+                    System.err.println("[MEDITLINK] ⚠ RÉGRESSION pour "
+                            + commande.getExternalId()
+                            + " → conservation de l'ancien commentaire");
+                } else {
+                    commande.setCommentaire(commentaire);
+                    if (commentaire == null) {
+                        commentStats.recordFailure(commande.getExternalId(),
+                                "extractComments returned null");
+                    } else {
+                        commentStats.recordEmpty(commande.getExternalId());
+                    }
+                }
                 System.out.println("[MEDITLINK] Commentaire récupéré pour " + commande.getExternalId());
             }));
         }
@@ -278,8 +381,13 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
 
     private Commande extractCommandeFromRow(WebElement row) {
         try {
+            // Mapping colonnes MediLink (1-indexed) :
+            //   1: Statut | 2: Nom du cas | 3: Nom du patient | 4: Date de commande
+            //   5: Date de livraison demandée | 6: Date modifiée
+            //   7: Nom de la clinique (= cabinet/partenaire)
+            //   8: ID de commande (= externalId réel utilisé dans l'URL détail)
             String patientName = extractText(row, "td:nth-child(3) span");
-            String externalId = extractText(row, "td:nth-child(7) span");
+            String externalId = extractText(row, "td:nth-child(8) span");
 
             if (patientName.isEmpty() || externalId.isEmpty()) {
                 System.out.println("[MEDITLINK] Données manquantes dans la ligne, commande ignorée");
@@ -291,7 +399,7 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             commande.setRefPatient(patientName);
             commande.setNumeroSuivi(externalId);
             commande.setPlateforme(Plateforme.MEDITLINK);
-            commande.setCabinet(extractText(row, "td:nth-child(6) span"));
+            commande.setCabinet(extractText(row, "td:nth-child(7) span"));
             commande.setVu(false);
 
             // Gestion des dates
@@ -362,7 +470,46 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         }
     }
 
+    /**
+     * Exécute une opération Selenium sous le verrou {@code fetchLock}.
+     * Patiente jusqu'à {@link #LOCK_WAIT_TIMEOUT_MS} qu'un éventuel fetch ou
+     * autre opération en cours se termine. Garantit qu'une seule opération
+     * utilise le navigateur Selenium à la fois.
+     *
+     * @throws IllegalStateException si le verrou n'est pas obtenu dans le délai.
+     */
+    private <T> T runExclusively(String operation, Callable<T> action) {
+        boolean acquired = false;
+        try {
+            System.out.println("[Verrou] '" + operation + "' demande le verrou MeditLink...");
+            acquired = fetchLock.tryLock(LOCK_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (!acquired) {
+                throw new IllegalStateException(
+                        "Service MeditLink occupé : une autre opération est en cours. "
+                                + "Réessayez dans quelques minutes.");
+            }
+            System.out.println("[Verrou] '" + operation + "' a obtenu le verrou.");
+            return action.call();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Attente du verrou MeditLink interrompue (" + operation + ")", ie);
+        } catch (RuntimeException re) {
+            throw re;
+        } catch (Exception e) {
+            throw new RuntimeException("Erreur lors de '" + operation + "' : " + e.getMessage(), e);
+        } finally {
+            if (acquired) {
+                fetchLock.unlock();
+                System.out.println("[Verrou] '" + operation + "' a libéré le verrou.");
+            }
+        }
+    }
+
     public boolean download3dScan(String externalId) {
+        return runExclusively("download3dScan", () -> doDownload3dScan(externalId));
+    }
+
+    private boolean doDownload3dScan(String externalId) {
         System.out.println("[MEDITLINK] Début téléchargement scan 3D pour " + externalId);
 
         if (!ensureConnection()) {
@@ -398,25 +545,40 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         System.out.println("[MEDITLINK] Début déconnexion...");
         closeDriver();
         isLoggedIn = false;
-        commandesStorage.clear();
+        synchronized (commandesStorage) {
+            commandesStorage.clear();
+        }
+        cacheTimestamp = 0L;
         lastFetchTime = null;
         System.out.println("[MEDITLINK] Déconnexion réussie, cache vidé");
         return "Déconnexion réussie.";
     }
 
-    // Méthodes utilitaires
+    // Méthodes utilitaires — accès cache synchronisés pour éviter les
+    // ConcurrentModificationException pendant qu'un fetch met à jour le cache.
     public List<Commande> getCommandesStorage() {
-        return new ArrayList<>(commandesStorage);
+        synchronized (commandesStorage) {
+            return new ArrayList<>(commandesStorage);
+        }
     }
 
     public Optional<Commande> getCommandeByExternalId(String id) {
-        return commandesStorage.stream()
-                .filter(c -> id.equals(c.getExternalId()))
-                .findFirst();
+        synchronized (commandesStorage) {
+            return commandesStorage.stream()
+                    .filter(c -> id.equals(c.getExternalId()))
+                    .findFirst();
+        }
     }
 
+    /**
+     * Vide le cache. Le prochain {@link #fetchCommandes()} déclenchera donc
+     * un refresh COMPLET (re-scrape de tous les commentaires).
+     */
     public void clearCommandesStorage() {
-        commandesStorage.clear();
+        synchronized (commandesStorage) {
+            commandesStorage.clear();
+        }
+        cacheTimestamp = 0L;
         lastFetchTime = null;
         System.out.println("[MEDITLINK] Cache vidé manuellement");
     }
