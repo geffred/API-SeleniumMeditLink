@@ -288,65 +288,62 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         System.out.println(
                 "[MEDITLINK] " + commandes.size() + " commandes extraites, récupération des commentaires...");
 
-        // Récupération des commentaires en parallèle
-        ExecutorService executor = Executors.newFixedThreadPool(3);
-        List<Future<?>> futures = new ArrayList<>();
-
+        // ⚠ Récupération SÉQUENTIELLE des commentaires.
+        //
+        // Le code précédent utilisait Executors.newFixedThreadPool(3) pour
+        // paralléliser, MAIS extractComments() fait driver.get(...) qui change
+        // l'URL du WebDriver partagé. Avec 3 threads concurrents :
+        //   1) Thread A → /inbox/detail/X
+        //   2) Thread B → /inbox/detail/Y (écrase la navigation de A)
+        //   3) Thread C → /inbox/detail/Z (écrase celle de B)
+        // Résultat : les 3 threads lisent la MÊME page (la dernière chargée),
+        // donc les 3 commandes reçoivent le même commentaire — ce qui pollue
+        // la BD et déclenche ensuite des "régressions" fantômes au cycle suivant.
+        // La sérialisation coûte ~30 s pour 10 commandes mais garantit la
+        // justesse des données.
         for (Commande commande : commandes) {
-            futures.add(executor.submit(() -> {
-                // Protection régression : ancien commentaire connu pour cette
-                // commande, depuis le tracker en mémoire OU à défaut depuis le
-                // cache local du scraper.
-                String ancienCommentaire = commentStats
-                        .getLastKnownComment(commande.getExternalId());
-                if (ancienCommentaire == null) {
-                    synchronized (commandesStorage) {
-                        ancienCommentaire = commandesStorage.stream()
-                                .filter(c -> commande.getExternalId().equals(c.getExternalId()))
-                                .map(Commande::getCommentaire)
-                                .filter(c -> c != null && !c.trim().isEmpty()
-                                        && !"Aucun commentaire".equals(c.trim()))
-                                .findFirst()
-                                .orElse(null);
-                    }
+            // Protection régression : ancien commentaire connu pour cette
+            // commande, depuis le tracker en mémoire OU à défaut depuis le
+            // cache local du scraper.
+            String ancienCommentaire = commentStats
+                    .getLastKnownComment(commande.getExternalId());
+            if (ancienCommentaire == null) {
+                synchronized (commandesStorage) {
+                    ancienCommentaire = commandesStorage.stream()
+                            .filter(c -> commande.getExternalId().equals(c.getExternalId()))
+                            .map(Commande::getCommentaire)
+                            .filter(c -> c != null && !c.trim().isEmpty()
+                                    && !"Aucun commentaire".equals(c.trim()))
+                            .findFirst()
+                            .orElse(null);
                 }
-                String commentaire = extractComments(commande.getExternalId());
-                if (commentaire != null && !commentaire.trim().isEmpty()
-                        && !"Aucun commentaire".equals(commentaire.trim())) {
-                    commande.setCommentaire(commentaire);
-                    commentStats.recordSuccess(commande.getExternalId(), commentaire);
-                } else if (ancienCommentaire != null) {
-                    // RÉGRESSION : on garde l'ancien et on alerte
-                    commande.setCommentaire(ancienCommentaire);
-                    commentStats.recordRegression(commande.getExternalId(),
-                            ancienCommentaire,
-                            "Re-extraction vide alors qu'un commentaire était connu");
-                    System.err.println("[MEDITLINK] ⚠ RÉGRESSION pour "
-                            + commande.getExternalId()
-                            + " → conservation de l'ancien commentaire");
-                } else {
-                    commande.setCommentaire(commentaire);
-                    if (commentaire == null) {
-                        commentStats.recordFailure(commande.getExternalId(),
-                                "extractComments returned null");
-                    } else {
-                        commentStats.recordEmpty(commande.getExternalId());
-                    }
-                }
-                System.out.println("[MEDITLINK] Commentaire récupéré pour " + commande.getExternalId());
-            }));
-        }
-
-        // Attente fin de tous les threads
-        for (Future<?> future : futures) {
-            try {
-                future.get();
-            } catch (Exception e) {
-                System.err.println("[MEDITLINK] Erreur lors de la récupération des commentaires: " + e.getMessage());
             }
+            String commentaire = extractComments(commande.getExternalId());
+            if (commentaire != null && !commentaire.trim().isEmpty()
+                    && !"Aucun commentaire".equals(commentaire.trim())) {
+                commande.setCommentaire(commentaire);
+                commentStats.recordSuccess(commande.getExternalId(), commentaire);
+            } else if (ancienCommentaire != null) {
+                // RÉGRESSION : on garde l'ancien et on alerte
+                commande.setCommentaire(ancienCommentaire);
+                commentStats.recordRegression(commande.getExternalId(),
+                        ancienCommentaire,
+                        "Re-extraction vide alors qu'un commentaire était connu");
+                System.err.println("[MEDITLINK] ⚠ RÉGRESSION pour "
+                        + commande.getExternalId()
+                        + " → conservation de l'ancien commentaire");
+            } else {
+                commande.setCommentaire(commentaire);
+                if (commentaire == null) {
+                    commentStats.recordFailure(commande.getExternalId(),
+                            "extractComments returned null");
+                } else {
+                    commentStats.recordEmpty(commande.getExternalId());
+                }
+            }
+            System.out.println("[MEDITLINK] Commentaire récupéré pour " + commande.getExternalId());
         }
 
-        executor.shutdown();
         System.out.println("[MEDITLINK] Tous les commentaires récupérés");
 
         return commandes;
