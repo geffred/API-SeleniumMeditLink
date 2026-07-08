@@ -23,6 +23,11 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
     private WebDriverWait wait;
     protected boolean isLoggedIn = false;
 
+    // Horodatage de la dernière utilisation du driver. Permet de fermer Chrome
+    // après une période d'inactivité (RAM facturée à l'usage sur Railway) au
+    // lieu de le garder résident 24h/24 entre deux fetches.
+    private volatile long lastDriverActivityMillis = System.currentTimeMillis();
+
     /**
      * Initialise Selenium WebDriver avec configuration de téléchargement
      * automatique.
@@ -52,6 +57,9 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
             prefs.put("download.prompt_for_download", false);
             prefs.put("download.directory_upgrade", true);
             prefs.put("safebrowsing.enabled", true);
+            // Pas d'images : on ne scrape que du texte (commandes, commentaires).
+            // Réduit nettement la RAM du renderer Chrome et accélère les pages.
+            prefs.put("profile.managed_default_content_settings.images", 2);
 
             ChromeOptions options = new ChromeOptions();
             options.setExperimentalOption("prefs", prefs);
@@ -64,9 +72,11 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
                     "--remote-allow-origins=*",
                     "--disable-extensions",
                     "--disable-popup-blocking",
-                    "--disable-background-timer-throttling");
+                    "--disable-background-timer-throttling",
+                    "--blink-settings=imagesEnabled=false");
 
             driver = new ChromeDriver(options);
+            lastDriverActivityMillis = System.currentTimeMillis();
             driver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(60));
             driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
             driver.manage().timeouts().scriptTimeout(Duration.ofSeconds(30));
@@ -242,7 +252,18 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
     }
 
     protected WebDriver getDriver() {
+        lastDriverActivityMillis = System.currentTimeMillis();
         return driver;
+    }
+
+    /** Indique si un navigateur est actuellement ouvert. */
+    public synchronized boolean hasActiveDriver() {
+        return driver != null;
+    }
+
+    /** Indique si le driver n'a pas été utilisé depuis au moins idleThresholdMs. */
+    public boolean isDriverIdle(long idleThresholdMs) {
+        return System.currentTimeMillis() - lastDriverActivityMillis >= idleThresholdMs;
     }
 
     protected WebDriverWait getWait() {
