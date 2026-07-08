@@ -4,6 +4,8 @@ import org.openqa.selenium.*;
 import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.support.ui.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.selenium.meditlink.Entity.Commande;
@@ -64,9 +66,41 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
     @Autowired
     private CommentExtractionStatsService commentStats;
 
+    // Fermer Chrome après ce délai sans utilisation : la RAM Railway est
+    // facturée à l'usage, inutile de garder ~400 Mo de navigateur résident
+    // entre deux fetches. 0 = désactivé (Chrome reste ouvert en permanence).
+    // Le fetch suivant se reconnecte automatiquement via ensureConnection().
+    @Value("${selenium.idle-close-minutes:15}")
+    private long idleCloseMinutes;
+
     // Credentials
     private final String email = "digilab@thesmilespace.be";
     private final String password = "!Pass*1234";
+
+    /**
+     * Ferme Chrome quand il est inactif depuis idle-close-minutes, pour
+     * libérer la mémoire native du conteneur. Protégé par fetchLock : ne
+     * ferme jamais un navigateur en cours d'utilisation (fetch/téléchargement).
+     */
+    @Scheduled(fixedDelay = 60_000L, initialDelay = 120_000L)
+    public void closeIdleDriver() {
+        if (idleCloseMinutes <= 0 || !hasActiveDriver()
+                || !isDriverIdle(idleCloseMinutes * 60_000L)) {
+            return;
+        }
+        if (!fetchLock.tryLock()) {
+            return; // opération Selenium en cours → on réessaiera dans 1 min
+        }
+        try {
+            if (hasActiveDriver() && isDriverIdle(idleCloseMinutes * 60_000L)) {
+                System.out.println("[SELENIUM] Chrome inactif depuis " + idleCloseMinutes
+                        + " min → fermeture pour libérer la RAM (le cache de commandes est conservé).");
+                closeDriver();
+            }
+        } finally {
+            fetchLock.unlock();
+        }
+    }
 
     @Override
     public String login() {
