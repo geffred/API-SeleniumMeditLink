@@ -20,9 +20,11 @@ WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 
 # ✅ Installer Chrome et les dépendances nécessaires pour Selenium
+# procps fournit ps/pkill, indispensables au nettoyage des processus Chrome
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
+    procps \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y \
@@ -58,5 +60,14 @@ USER selenium
 # Exposition du port de l'application Spring Boot
 EXPOSE 8080
 
-# Démarrage de l'application
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Démarrage de l'application.
+# MaxRAMPercentage=50 : la JVM ne prend que la moitié de la RAM du conteneur,
+# l'autre moitié reste disponible pour la mémoire native de Chrome/Chromedriver.
+# ExitOnOutOfMemoryError : un OOM heap produit un arrêt net et journalisé
+# plutôt qu'un service zombie.
+ENTRYPOINT ["java", \
+    "-XX:MaxRAMPercentage=50.0", \
+    "-XX:InitialRAMPercentage=25.0", \
+    "-XX:+ExitOnOutOfMemoryError", \
+    "-XX:+UseG1GC", \
+    "-jar", "app.jar"]
