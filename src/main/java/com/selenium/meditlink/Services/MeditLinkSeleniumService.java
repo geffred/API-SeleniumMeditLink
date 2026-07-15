@@ -202,6 +202,13 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
         try {
             return doFetchCommandes();
         } finally {
+            // Fermeture SYSTÉMATIQUE du navigateur après chaque fetch (pattern
+            // Dexis, stable en prod). L'auto-sync oneScan tourne toutes les
+            // 10 min : avec la seule fermeture d'inactivité (15 min), Chrome
+            // n'était JAMAIS fermé et grossissait jusqu'au crash du conteneur.
+            // Le fetch suivant se reconnecte via ensureConnection().
+            System.out.println("[MEDITLINK] Fermeture systématique du driver après fetch");
+            closeDriver();
             fetchLock.unlock();
         }
     }
