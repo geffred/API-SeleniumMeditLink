@@ -44,6 +44,11 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
         try {
             System.out.println("[SELENIUM] Initialisation du WebDriver Chrome...");
 
+            // Nettoyage agressif AVANT de démarrer : tue les chrome/chromedriver
+            // orphelins d'une session précédente mal fermée (sinon ils
+            // s'accumulent en mémoire native jusqu'à l'OOM du conteneur).
+            cleanUpChromeProcesses();
+
             WebDriverManager.chromedriver().setup();
 
             // Dossier de téléchargement automatique
@@ -73,7 +78,20 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
                     "--disable-extensions",
                     "--disable-popup-blocking",
                     "--disable-background-timer-throttling",
-                    "--blink-settings=imagesEnabled=false");
+                    "--blink-settings=imagesEnabled=false",
+                    // Durcissement mémoire (aligné sur Dexis, stable en prod) :
+                    // limite le tas JS des renderers et leur nombre — sans quoi
+                    // un Chrome longue durée grossit jusqu'à saturer le conteneur.
+                    "--js-flags=--max-old-space-size=256",
+                    "--renderer-process-limit=2",
+                    "--disable-software-rasterizer",
+                    "--disable-background-networking",
+                    "--disable-breakpad",
+                    "--disable-crash-reporter",
+                    "--mute-audio",
+                    "--no-first-run",
+                    "--metrics-recording-only",
+                    "--hide-scrollbars");
 
             driver = new ChromeDriver(options);
             lastDriverActivityMillis = System.currentTimeMillis();
@@ -195,12 +213,57 @@ public abstract class BaseSeleniumService implements DentalPlatformService {
             wait = null;
             isLoggedIn = false;
 
+            // Tue les chrome/chromedriver que quit() aurait laissés derrière
+            // (session déjà morte, quit() en échec…). Sans ça ils s'accumulent
+            // en mémoire native — cause des crashs Railway à répétition.
+            cleanUpChromeProcesses();
+
             // Nettoyage mémoire explicite
             try {
                 System.gc();
                 Thread.sleep(100); // Laisse un court délai au GC
             } catch (InterruptedException ignored) {
             }
+        }
+    }
+
+    /**
+     * Nettoyage agressif des processus Chrome orphelins et des profils
+     * temporaires. Nécessite procps (pkill/ps), installé dans le Dockerfile.
+     * Porté depuis SmilelabDexis-API, stable en production.
+     */
+    private void cleanUpChromeProcesses() {
+        try {
+            String[] killCommands = {
+                    "pkill -9 -f 'chrome.*--headless'",
+                    "pkill -9 -f chromedriver",
+                    "pkill -9 -f 'chrome --type='",
+                    "pkill -9 chrome",
+                    "ps aux | grep -E 'chrome|chromedriver' | grep -v grep | awk '{print $2}' | xargs -r kill -9"
+            };
+
+            for (String cmd : killCommands) {
+                try {
+                    Process p = new ProcessBuilder("bash", "-c", cmd).start();
+                    p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
+                    p.destroy();
+                } catch (Exception ignored) {
+                }
+            }
+
+            // Profils Chrome temporaires abandonnés (disque éphémère limité)
+            try {
+                Process p = new ProcessBuilder("bash", "-c",
+                        "find /tmp -name '.org.chromium.*' -type d -mmin +10 -exec rm -rf {} + 2>/dev/null || true")
+                        .start();
+                p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+                p.destroy();
+            } catch (Exception ignored) {
+            }
+
+            System.out.println("[SELENIUM] Nettoyage des processus Chrome effectué.");
+        } catch (Exception e) {
+            System.err.println("[SELENIUM] Échec nettoyage processus: " + e.getMessage());
         }
     }
 
