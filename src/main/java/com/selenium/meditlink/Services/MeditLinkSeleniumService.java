@@ -360,27 +360,49 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
                 }
             }
             String commentaire = extractComments(commande.getExternalId());
+
+            // Retry ciblé : si un commentaire était CONNU pour cette commande
+            // et que l'extraction revient vide ou en échec, on retente UNE fois
+            // (page lente, binding Vue tardif) avant de déclarer une régression.
+            boolean extractionVide = commentaire == null || commentaire.trim().isEmpty()
+                    || "Aucun commentaire".equals(commentaire.trim());
+            if (ancienCommentaire != null && extractionVide) {
+                System.out.println("[MEDITLINK] Extraction vide pour " + commande.getExternalId()
+                        + " alors qu'un commentaire est connu → nouvelle tentative...");
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                commentaire = extractComments(commande.getExternalId());
+            }
+
             if (commentaire != null && !commentaire.trim().isEmpty()
                     && !"Aucun commentaire".equals(commentaire.trim())) {
                 commande.setCommentaire(commentaire);
                 commentStats.recordSuccess(commande.getExternalId(), commentaire);
+            } else if (commentaire == null) {
+                // ÉCHEC TECHNIQUE (timeout/navigation) : on conserve l'ancien
+                // commentaire s'il existe, et on compte un failure — PAS une
+                // régression (le sélecteur n'est pas en cause).
+                if (ancienCommentaire != null) {
+                    commande.setCommentaire(ancienCommentaire);
+                }
+                commentStats.recordFailure(commande.getExternalId(),
+                        "extractComments en échec technique (timeout/navigation)");
             } else if (ancienCommentaire != null) {
-                // RÉGRESSION : on garde l'ancien et on alerte
+                // RÉGRESSION confirmée (page chargée + retry → toujours vide) :
+                // on garde l'ancien et on alerte.
                 commande.setCommentaire(ancienCommentaire);
                 commentStats.recordRegression(commande.getExternalId(),
                         ancienCommentaire,
-                        "Re-extraction vide alors qu'un commentaire était connu");
+                        "Re-extraction vide alors qu'un commentaire était connu (après retry)");
                 System.err.println("[MEDITLINK] ⚠ RÉGRESSION pour "
                         + commande.getExternalId()
                         + " → conservation de l'ancien commentaire");
             } else {
                 commande.setCommentaire(commentaire);
-                if (commentaire == null) {
-                    commentStats.recordFailure(commande.getExternalId(),
-                            "extractComments returned null");
-                } else {
-                    commentStats.recordEmpty(commande.getExternalId());
-                }
+                commentStats.recordEmpty(commande.getExternalId());
             }
             System.out.println("[MEDITLINK] Commentaire récupéré pour " + commande.getExternalId());
         }
@@ -490,9 +512,20 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             WebElement commentaireTextarea = wait.until(
                     ExpectedConditions.presenceOfElementLocated(By.cssSelector(COMMENT_TEXTAREA_CSS)));
 
-            String commentaire = commentaireTextarea.getAttribute("value");
-            if (commentaire == null || commentaire.trim().isEmpty()) {
-                commentaire = commentaireTextarea.getText();
+            // MeditLink est une SPA Vue : la textarea peut être PRÉSENTE dans le
+            // DOM avant que sa valeur soit injectée par le binding. Lire trop
+            // tôt → valeur vide → faux "Aucun commentaire" → fausse alerte de
+            // régression. On attend donc que le contenu apparaisse (jusqu'à
+            // ~3 s), en re-localisant l'élément à chaque essai (re-render Vue).
+            String commentaire = lireValeurTextarea(commentaireTextarea);
+            for (int attempt = 0; (commentaire == null || commentaire.trim().isEmpty()) && attempt < 6; attempt++) {
+                Thread.sleep(500);
+                try {
+                    commentaireTextarea = driver.findElement(By.cssSelector(COMMENT_TEXTAREA_CSS));
+                } catch (Exception relocateError) {
+                    break; // l'élément a disparu : on garde la dernière lecture
+                }
+                commentaire = lireValeurTextarea(commentaireTextarea);
             }
 
             String result = commentaire != null && !commentaire.trim().isEmpty() ? commentaire.trim()
@@ -503,9 +536,22 @@ public class MeditLinkSeleniumService extends BaseSeleniumService {
             return result;
 
         } catch (Exception e) {
-            System.err.println("[MEDITLINK] Impossible de récupérer les commentaires pour " + externalId);
-            return "Aucun commentaire";
+            // ÉCHEC TECHNIQUE (timeout, navigation, session) — à distinguer
+            // d'une commande réellement sans commentaire. On renvoie null pour
+            // que l'appelant compte un failure, PAS une régression.
+            System.err.println("[MEDITLINK] Impossible de récupérer les commentaires pour " + externalId
+                    + " : " + e.getMessage());
+            return null;
         }
+    }
+
+    /** Lit la valeur d'une textarea (attribut value, puis texte en repli). */
+    private String lireValeurTextarea(WebElement textarea) {
+        String valeur = textarea.getAttribute("value");
+        if (valeur == null || valeur.trim().isEmpty()) {
+            valeur = textarea.getText();
+        }
+        return valeur;
     }
 
     /**
