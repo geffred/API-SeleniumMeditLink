@@ -21,10 +21,20 @@ COPY --from=build /app/target/*.jar app.jar
 
 # ✅ Installer Chrome et les dépendances nécessaires pour Selenium
 # procps fournit ps/pkill, indispensables au nettoyage des processus Chrome
+#
+# tini : init minimal utilisé comme PID 1. INDISPENSABLE.
+# Sans lui la JVM est PID 1 et ne fait jamais wait() sur les enfants Chrome
+# orphelins (renderers, crashpad, zygote). Ils restent zombies indéfiniment,
+# chacun occupant un slot PID. Sur Railway la limite est de 1000 PID : après
+# ~40 h d'uptime le conteneur atteint 1000/1000, plus aucun fork ni
+# pthread_create n'est possible, et TOUT scraping meurt sur
+# « OutOfMemoryError: unable to create native thread ».
+# Un zombie ne peut pas être tué : pkill est totalement inopérant ici.
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     procps \
+    tini \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y \
@@ -61,13 +71,25 @@ USER selenium
 EXPOSE 8080
 
 # Démarrage de l'application.
-# MaxRAMPercentage=50 : la JVM ne prend que la moitié de la RAM du conteneur,
-# l'autre moitié reste disponible pour la mémoire native de Chrome/Chromedriver.
-# ExitOnOutOfMemoryError : un OOM heap produit un arrêt net et journalisé
-# plutôt qu'un service zombie.
-ENTRYPOINT ["java", \
-    "-XX:MaxRAMPercentage=50.0", \
-    "-XX:InitialRAMPercentage=25.0", \
+#
+# tini -g -- : tini devient PID 1 et récolte (wait) tous les processus
+#   orphelins, y compris les enfants de Chrome. C'est LE correctif de fond
+#   contre l'accumulation de zombies qui saturait la limite de PID.
+#   -g propage aussi les signaux à tout le groupe de processus, donc un
+#   SIGTERM Railway arrête proprement la JVM ET les Chrome encore ouverts.
+#
+# MaxRAMPercentage=35 : 8 Go de heap sur un conteneur de 16 Go étaient
+#   inutiles (heap mesuré à 25 Mo / 8108 Mo, soit 0 %) et privaient Chrome
+#   de mémoire native. 35 % suffit très largement et laisse respirer Chrome.
+# Xss512k : divise par deux la pile de chaque thread, double la marge avant
+#   épuisement des ressources natives.
+# ExitOnOutOfMemoryError : arrêt net sur OOM heap plutôt qu'un service zombie.
+#   Attention : ce flag NE couvre PAS « unable to create native thread » —
+#   c'est PidMonitorService qui prend le relais pour ce cas.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "java", \
+    "-XX:MaxRAMPercentage=35.0", \
+    "-XX:InitialRAMPercentage=15.0", \
+    "-Xss512k", \
     "-XX:+ExitOnOutOfMemoryError", \
     "-XX:+UseG1GC", \
     "-jar", "app.jar"]
